@@ -37,9 +37,8 @@ processor.run(new MikroormDatabase(), async (ctx) => {
         ctx.store.persist(transfer)
         ctx.store.defer(Account, t.from, t.to)
     }
-    const accounts = await ctx.store.loadOrCreate(Account, createAccount)
-
-    console.log(transfersData.length, accounts.length)
+    
+    await ctx.store.loadOrCreate(Account, createAccount)
 })
 
 interface TransferEvent {
