@@ -31,14 +31,14 @@ type Ctx = BatchContext<Store, Item>
 
 processor.run(new MikroormDatabase(), async (ctx) => {
     let transfersData = getTransfers(ctx)
-
+    ctx.store.setFactory(Account, createAccount)
     for (let t of transfersData) {
         const transfer = new Transfer(t)
-        ctx.store.persist(transfer)
-        ctx.store.defer(Account, t.from, t.to)
+        ctx.store.lazyPersist(transfer)
+        ctx.store.lazyLoad(Account, [t.from, t.to])
     }
     
-    await ctx.store.loadOrCreate(Account, createAccount)
+    await ctx.store.persistAll(Account)
 })
 
 interface TransferEvent {

@@ -42,65 +42,71 @@ export interface Entity {
 //      */
 //     take?: number
 // }
-
+export type EntityFactory<E> = (id: string) => E
 /**
  * Restricted version of TypeORM entity manager for squid data handlers.
  */
 export class Store {
-    private deferredIds = new Map<EntityClass<Entity>, Set<string>>()
+    private lazyEntityIds = new Map<EntityClass<Entity>, Set<string>>()
+    private factories = new Map<EntityClass<Entity>, EntityFactory<Entity>>()
 
     constructor(private em: () => EntityManager) {}
 
-    defer<E extends Entity>(entityClass: EntityClass<E>, ...ids: string[]) {
-        const deferedIds = this.getDeferredIds(entityClass)
+    setFactory<E extends Entity>(entityClass: EntityClass<E>, factory: (id: string) => E) {
+        this.factories.set(entityClass, factory)
+    }
+
+    lazyLoad<E extends Entity>(entityClass: EntityClass<E>, ids: string | string[]) {
+        const lazyIds = this.getLazyEntityIds(entityClass)
         for (const id of ids) {
-            deferedIds.add(id)
+            lazyIds.add(id)
         }
         return this
     }
 
-    async load<E extends Entity>(entityClass: EntityClass<E>): Promise<E[]>
-    async load<E extends Entity>(): Promise<void>
-    async load<E extends Entity>(entityClass?: EntityClass<E>): Promise<E[] | void> {
+    async forceLoad<E extends Entity>(entityClass: EntityClass<E>): Promise<E[]>
+    async forceLoad<E extends Entity>(): Promise<void>
+    async forceLoad<E extends Entity>(entityClass?: EntityClass<E>): Promise<E[] | void> {
         if (entityClass) {
             return this.loadByEntityClass(entityClass)
         } else {
-            for (const e of this.deferredIds.keys()) {
+            for (const e of this.lazyEntityIds.keys()) {
                 await this.loadByEntityClass(e)
             }
         }
     }
 
     private async loadByEntityClass<E extends Entity>(entityClass: EntityClass<E>): Promise<E[]> {
-        const deferredIds = this.getDeferredIds(entityClass)
-        if (deferredIds.size == 0) return []
+        const lazyIds = this.getLazyEntityIds(entityClass)
+        if (lazyIds.size == 0) return []
 
-        const entities = await this.find(entityClass, {id: {$in: [...deferredIds]}} as any)
-        deferredIds.clear()
+        const entities = await this.find(entityClass, {id: {$in: [...lazyIds]}} as any)
+        lazyIds.clear()
 
         return entities
     }
 
-    async loadOrCreate<E extends Entity>(entityClass: EntityClass<E>, create: (id: string) => E): Promise<E[]> {
-        const deferredIds = this.getDeferredIds(entityClass)
-        if (deferredIds.size == 0) return []
+    async persistAll<E extends Entity>(entityClass: EntityClass<E>): Promise<E[]> {
+        const lazyIds = this.getLazyEntityIds(entityClass)
+        if (lazyIds.size == 0) return []
 
-        const entities = await this.find(entityClass, {id: {$in: [...deferredIds]}} as any)
+        const entities = await this.find(entityClass, {id: {$in: [...lazyIds]}} as any)
 
         const fetchedIds = new Set(entities.map((e) => e.id))
-        for (const id of deferredIds) {
+        for (const id of lazyIds) {
             if (fetchedIds.has(id)) continue
-
-            const e = create(id)
+            const factory = this.factories.get(entityClass)
+            assert(factory, `No ID ${id} is found and no factory is set for type ${entityClass.name}`)
+            const e = factory(id)
             entities.push(e)
-            this.persist(e)
+            this.em().persist(e)
         }
-        deferredIds.clear()
+        lazyIds.clear()
 
         return entities
     }
 
-    remove<E extends Entity>(...entities: E[]): void {
+    lazyRemove<E extends Entity>(...entities: E[]): void {
         // if (entities.length == 0) return
         // let entityClass = entities[0].constructor as EntityClass<E>
         // for (let i = 1; i < entities.length; i++) {
@@ -125,24 +131,25 @@ export class Store {
         return this.em().findOneOrFail(entityClass, where)
     }
 
-    get<E extends Entity>(entityClass: EntityClass<E>, id: string): Promise<E | undefined> {
+    getById<E extends Entity>(entityClass: EntityClass<E>, id: string): Promise<E | undefined> {
         return this.findOne<E>(entityClass, {id} as any)
     }
 
-    async getOrCreate<E extends Entity>(
+    async persist<E extends Entity>(
         entityClass: EntityClass<E>,
-        id: string,
-        create: (id: string) => E
+        id: string
     ): Promise<E | undefined> {
-        let e = await this.findOne<E>(entityClass, {id} as any)
+        let e = await this.getById(entityClass, id)
         if (!e) {
-            e = create(id)
-            this.persist(e)
+            const factory = this.factories.get(entityClass)
+            assert(factory, `The database has no id ${id} and no factory is set for type ${entityClass.name}`)
+            e = <E>factory(id)
+            this.em().persist(e)
         }
         return e
     }
 
-    persist<E extends Entity>(e: E | E[]) {
+    lazyPersist<E extends Entity>(e: E | E[]) {
         return this.em().persist(e)
     }
 
@@ -158,28 +165,16 @@ export class Store {
         return this.em().refresh(entities)
     }
 
-    private getDeferredIds<E extends Entity>(entityClass: EntityClass<E>): Set<string> {
-        let ids = this.deferredIds.get(entityClass)
+    private getLazyEntityIds<E extends Entity>(entityClass: EntityClass<E>): Set<string> {
+        let ids = this.lazyEntityIds.get(entityClass)
         if (!ids) {
             ids = new Set()
-            this.deferredIds.set(entityClass, ids)
+            this.lazyEntityIds.set(entityClass, ids)
         }
         return ids
     }
 }
 
-function* splitIntoBatches<T>(list: T[], maxBatchSize: number): Generator<T[]> {
-    if (list.length <= maxBatchSize) {
-        yield list
-    } else {
-        let offset = 0
-        while (list.length - offset > maxBatchSize) {
-            yield list.slice(offset, offset + maxBatchSize)
-            offset += maxBatchSize
-        }
-        yield list.slice(offset)
-    }
-}
 
 function noNull<T>(val: null | undefined | T): T | undefined {
     return val == null ? undefined : val
