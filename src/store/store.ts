@@ -1,7 +1,7 @@
 import assert from 'assert'
 import {EntityManager, EntityClass} from '@mikro-orm/core'
 import {FilterQuery} from '@mikro-orm/core/typings'
-import e from 'cors'
+import { threadId } from 'worker_threads'
 // import {ColumnMetadata} from 'typeorm/metadata/ColumnMetadata'
 
 // export interface EntityClass<T> {
@@ -48,43 +48,9 @@ export type EntityFactory<E> = (id: string) => E
  */
 export class Store {
     private lazyEntityIds = new Map<EntityClass<Entity>, Set<string>>()
-    private factories = new Map<EntityClass<Entity>, EntityFactory<Entity>>()
-
+    private lazyEntities = new Map<EntityClass<Entity>, Map<string, Entity>>()
+    
     constructor(private em: () => EntityManager) {}
-
-    setFactory<E extends Entity>(entityClass: EntityClass<E>, factory: (id: string) => E) {
-        this.factories.set(entityClass, factory)
-    }
-
-    lazyLoad<E extends Entity>(entityClass: EntityClass<E>, ids: string | string[]) {
-        const lazyIds = this.getLazyEntityIds(entityClass)
-        for (const id of ids) {
-            lazyIds.add(id)
-        }
-        return this
-    }
-
-    async forceLoad<E extends Entity>(entityClass: EntityClass<E>): Promise<E[]>
-    async forceLoad<E extends Entity>(): Promise<void>
-    async forceLoad<E extends Entity>(entityClass?: EntityClass<E>): Promise<E[] | void> {
-        if (entityClass) {
-            return this.loadByEntityClass(entityClass)
-        } else {
-            for (const e of this.lazyEntityIds.keys()) {
-                await this.loadByEntityClass(e)
-            }
-        }
-    }
-
-    private async loadByEntityClass<E extends Entity>(entityClass: EntityClass<E>): Promise<E[]> {
-        const lazyIds = this.getLazyEntityIds(entityClass)
-        if (lazyIds.size == 0) return []
-
-        const entities = await this.find(entityClass, {id: {$in: [...lazyIds]}} as any)
-        lazyIds.clear()
-
-        return entities
-    }
 
     async persistAll<E extends Entity>(entityClass: EntityClass<E>): Promise<E[]> {
         const lazyIds = this.getLazyEntityIds(entityClass)
@@ -92,16 +58,22 @@ export class Store {
 
         const entities = await this.find(entityClass, {id: {$in: [...lazyIds]}} as any)
 
+        for (const e of entities) {
+            let lazy = this.getLazyEntitiesIdMap(entityClass).get(e.id)
+            if (lazy) {
+                this.em().merge(e)
+                Object.assign(e, lazy)
+            } 
+        }
+
         const fetchedIds = new Set(entities.map((e) => e.id))
         for (const id of lazyIds) {
             if (fetchedIds.has(id)) continue
-            const factory = this.factories.get(entityClass)
-            assert(factory, `No ID ${id} is found and no factory is set for type ${entityClass.name}`)
-            const e = factory(id)
+            const e = this.getLazyEntitiesIdMap(entityClass).get(id)
+            assert(e, `${id} must by lazy loaded for type ${entityClass}`)
             entities.push(e)
             this.em().persist(e)
         }
-        lazyIds.clear()
 
         return entities
     }
@@ -131,33 +103,50 @@ export class Store {
         return this.em().findOneOrFail(entityClass, where)
     }
 
-    getById<E extends Entity>(entityClass: EntityClass<E>, id: string): Promise<E | undefined> {
+    getById<E extends Entity>(entityClass: EntityClass<E>, id: string): E | Promise<E | undefined>{
+        let e = this.lazyGet(entityClass, id)
+        if (e) return e
         return this.findOne<E>(entityClass, {id} as any)
     }
 
-    async persist<E extends Entity>(
-        entityClass: EntityClass<E>,
-        id: string
-    ): Promise<E | undefined> {
-        let e = await this.getById(entityClass, id)
-        if (!e) {
-            const factory = this.factories.get(entityClass)
-            assert(factory, `The database has no id ${id} and no factory is set for type ${entityClass.name}`)
-            e = <E>factory(id)
-            this.em().persist(e)
-        }
-        return e
-    }
+    // async persist<E extends Entity>(
+    //     entityClass: EntityClass<E>,
+    //     id: string
+    // ): Promise<E | undefined> {
+    //     let e = await this.getById(entityClass, id)
+    //     if (!e) {
+    //         const factory = this.factories.get(entityClass)
+    //         assert(factory, `The database has no id ${id} and no factory is set for type ${entityClass.name}`)
+    //         e = <E>factory(id)
+    //         this.em().persist(e)
+    //     }
+    //     return e
+    // }
 
     lazyPersist<E extends Entity>(e: E | E[]) {
         return this.em().persist(e)
     }
 
-    flush(): Promise<void> {
-        return this.em().flush()
+    lazyUpsert<E extends Entity>(entityClass: EntityClass<E>, e: E) {
+        this.getLazyEntityIds(entityClass).add(e.id)
+        this.getLazyEntitiesIdMap(entityClass).set(e.id, e)
+    }
+
+    private lazyGet<E extends Entity>(entityClass: EntityClass<E>, id: string): E | undefined {
+        return this.getLazyEntitiesIdMap(entityClass).get(id)
+    }
+
+
+    async flush(): Promise<void> {
+        const classes = this.lazyEntities.keys()
+        await Promise.all([...classes].map((c) => this.persistAll(c)))
+       
+        return await this.em().flush()
     }
 
     clear() {
+        this.lazyEntities.clear()
+        this.lazyEntityIds.clear()
         return this.em().clear()
     }
 
@@ -173,6 +162,16 @@ export class Store {
         }
         return ids
     }
+
+    private getLazyEntitiesIdMap<E extends Entity>(entityClass: EntityClass<E>): Map<string, E> {
+        let idMap = this.lazyEntities.get(entityClass)
+        if (!idMap) {
+            idMap = new Map<string, E>()
+            this.lazyEntities.set(entityClass, idMap)
+        }
+        return <Map<string, E>>idMap
+    }
+    
 }
 
 
