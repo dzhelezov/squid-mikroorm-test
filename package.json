@@ -11,8 +11,8 @@
     "query-node:start": "squid-graphql-server --subscriptions --max-response-size 10000 --dumb-cache in-memory --dumb-cache-ttl 1000 --dumb-cache-size 100 --dumb-cache-max-age 1000"
   },
   "dependencies": {
-    "@mikro-orm/core": "^5.5.0",
-    "@mikro-orm/postgresql": "^5.5.0",
+    "@mikro-orm/core": "^6.0.0",
+    "@mikro-orm/postgresql": "^6.0.0",
     "@subsquid/archive-registry": "1.0.15",
     "@subsquid/graphql-server": "3.2.2",
     "@subsquid/ss58": "0.1.2",
