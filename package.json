@@ -19,7 +19,7 @@
     "@subsquid/substrate-processor": "2.0.0",
     "@subsquid/typeorm-migration": "0.1.3",
     "dotenv": "^10.0.0",
-    "pg": "8.8.0"
+    "pg": "8.13.0"
   },
   "devDependencies": {
     "@subsquid/substrate-metadata-explorer": "1.0.8",
